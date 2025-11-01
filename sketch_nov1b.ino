@@ -71,8 +71,9 @@ const uint8_t mesh_id[6]          = { 0x78, 0x42, 0x1C, 0xA2, 0xBF, 0x9C };
 // ============================
 #define FIRMWARE_VERSION "1.0.1"
 #define VERSION_FILE_URL "https://raw.githubusercontent.com/akshit-a11y/water-system-firmware/main/version.txt"
+#define FIRMWARE_URL "https://raw.githubusercontent.com/akshit-a11y/water-system-firmware/main/firmware_v1.0.1.bin"
 #define GITHUB_REPO "akshit-a11y/water-system-firmware"
-#define OTA_CHECK_INTERVAL  300000 // 24 hours in milliseconds
+#define OTA_CHECK_INTERVAL  300000 // 5 minutes for testing (change to 24h later)
 
 // Time
 #define NTP_SERVER                 "pool.ntp.org"
