@@ -62,14 +62,14 @@ struct DeviceConfig {
 
 // Mesh Network
 #define CONFIG_MESH_MAX_LAYER      6
-const String mesh_ssid            = "AKSHIT";
+const String mesh_ssid            = "AK";
 const String mesh_password        = "9016455633";
 const uint8_t mesh_id[6]          = { 0x78, 0x42, 0x1C, 0xA2, 0xBF, 0x9C };
 
 // ============================
 // ⚙ OTA Configuration
 // ============================
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.0.1"
 #define VERSION_FILE_URL "https://raw.githubusercontent.com/akshit-a11y/water-system-firmware/main/version.txt"
 #define GITHUB_REPO "akshit-a11y/water-system-firmware"
 #define OTA_CHECK_INTERVAL  300000 // 24 hours in milliseconds
