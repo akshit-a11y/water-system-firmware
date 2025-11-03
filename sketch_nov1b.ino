@@ -62,18 +62,16 @@ struct DeviceConfig {
 
 // Mesh Network
 #define CONFIG_MESH_MAX_LAYER      6
-const String mesh_ssid            = "AK";
+const String mesh_ssid            = "AKSHIT";
 const String mesh_password        = "9016455633";
-const uint8_t mesh_id[6]          = { 0x78, 0x42, 0x1C, 0xA2, 0xBF, 0x9C };
+const uint8_t mesh_id[6]          = { 0x70, 0x40, 0x1D, 0xA2, 0xBF, 0x9C };
 
-// ============================
-// ⚙ OTA Configuration
-// ============================
-#define FIRMWARE_VERSION "1.0.1"
+#define FIRMWARE_VERSION "1.0.5"
 #define VERSION_FILE_URL "https://raw.githubusercontent.com/akshit-a11y/water-system-firmware/main/version.txt"
-#define FIRMWARE_URL "https://raw.githubusercontent.com/akshit-a11y/water-system-firmware/main/firmware_v1.0.1.bin"
+#define FIRMWARE_URL "https://github.com/akshit-a11y/water-system-firmware/releases/download/1.0.4/firmware.bin"
 #define GITHUB_REPO "akshit-a11y/water-system-firmware"
-#define OTA_CHECK_INTERVAL  300000 // 5 minutes for testing (change to 24h later)
+#define OTA_CHECK_INTERVAL  60000 // 5 minutes (for testing)
+
 
 // Time
 #define NTP_SERVER                 "pool.ntp.org"
@@ -83,7 +81,7 @@ const uint8_t mesh_id[6]          = { 0x78, 0x42, 0x1C, 0xA2, 0xBF, 0x9C };
 // Timing & Sampling
 #define SAMPLING_INTERVAL          20
 #define WDT_TIMEOUT                120000   // Watchdog Timeout
-const long SENSOR_READ_INTERVAL   = 10000;
+const long SENSOR_READ_INTERVAL   = 15000;
 const int THRESHOLD_COUNT         = 5;
 
 // ADC Configuration
@@ -387,6 +385,21 @@ struct ChildNode {
 };
 
 
+// ============================
+// 📊 WiFi Speed Monitoring
+// ============================
+struct OTASpeedMetrics {
+  unsigned long startTime;
+  unsigned long totalBytes;
+  float downloadSpeed; // KB/s
+  float estimatedTime; // seconds
+  unsigned long lastUpdate;
+  unsigned long bytesAtLastUpdate;
+};
+
+OTASpeedMetrics otaMetrics;
+
+
 std::vector<SensorData> offlineBuffer;
 std::vector<ChildNode> childNodes;
 const unsigned long CHILD_TIMEOUT = 60000; // 1 minute timeout
@@ -521,6 +534,14 @@ void setup() {
     configModeStartTime = millis();
     startConfigMode();
   }
+
+    // Temporary OTA test (remove after testing)
+  #ifdef SERIAL_DEBUG
+  if (WiFi.status() == WL_CONNECTED) {
+    delay(5000);
+    testOTAURL("https://github.com/akshit-a11y/water-system-firmware/releases/download/1.0.3/firmware.bin");
+  }
+  #endif
 }
 
 void setupMainSystem() {
@@ -686,6 +707,54 @@ bool isMeshRunning() {
   return (layer >= 0);
 }
 
+// Function to calculate download speed
+void updateOTASpeedMetrics(size_t currentBytes, size_t totalBytes) {
+  unsigned long currentTime = millis();
+  unsigned long elapsedTime = currentTime - otaMetrics.startTime;
+  
+  if (elapsedTime > 0) {
+    // Calculate current speed (KB/s)
+    unsigned long bytesSinceLastUpdate = currentBytes - otaMetrics.bytesAtLastUpdate;
+    unsigned long timeSinceLastUpdate = currentTime - otaMetrics.lastUpdate;
+    
+    if (timeSinceLastUpdate > 1000) { // Update speed every second
+      otaMetrics.downloadSpeed = (bytesSinceLastUpdate / 1024.0) / (timeSinceLastUpdate / 1000.0);
+      otaMetrics.bytesAtLastUpdate = currentBytes;
+      otaMetrics.lastUpdate = currentTime;
+      
+      // Calculate estimated time remaining
+      if (otaMetrics.downloadSpeed > 0) {
+        unsigned long remainingBytes = totalBytes - currentBytes;
+        otaMetrics.estimatedTime = (remainingBytes / 1024.0) / otaMetrics.downloadSpeed;
+      }
+      
+#ifdef SERIAL_DEBUG
+      Serial.printf("📊 OTA Progress: %d%% | Speed: %.2f KB/s | ETA: %.1f s\n", 
+                   (currentBytes * 100) / totalBytes,
+                   otaMetrics.downloadSpeed,
+                   otaMetrics.estimatedTime);
+#endif
+    }
+  }
+}
+
+// Function to get current WiFi signal strength
+void logWiFiStatus() {
+  if (WiFi.status() == WL_CONNECTED) {
+    int rssi = WiFi.RSSI();
+    float signalQuality = 2 * (rssi + 100); // Convert to percentage (approx)
+    
+#ifdef SERIAL_DEBUG
+    Serial.printf("📶 WiFi Status: RSSI=%ddB | Quality=%.1f%% | IP=%s\n", 
+                 rssi, signalQuality, WiFi.localIP().toString().c_str());
+#endif
+  } else {
+#ifdef SERIAL_DEBUG
+    Serial.println("❌ WiFi: Disconnected during OTA");
+#endif
+  }
+}
+
 // ============================
 // 🔄 OTA Functions (Autonomous Only)
 // ============================
@@ -696,7 +765,18 @@ void performRemoteOTA(String firmwareURL) {
   Serial.println("📥 Downloading from: " + firmwareURL);
 #endif
 
-  // Stop all critical operations
+  // Initialize speed metrics
+  otaMetrics.startTime = millis();
+  otaMetrics.totalBytes = 0;
+  otaMetrics.downloadSpeed = 0.0;
+  otaMetrics.estimatedTime = 0.0;
+  otaMetrics.lastUpdate = otaMetrics.startTime;
+  otaMetrics.bytesAtLastUpdate = 0;
+
+  // Log initial WiFi status
+  logWiFiStatus();
+
+  // Stop all critical operations before OTA
   digitalWrite(IP, LOW);
   digitalWrite(IV, LOW);
   digitalWrite(DP_1, LOW);
@@ -704,45 +784,211 @@ void performRemoteOTA(String firmwareURL) {
   digitalWrite(sv_1, LOW);
   digitalWrite(SV_4, LOW);
   digitalWrite(sv_8, LOW);
-  
+
   // Turn off mesh valves
   sendMeshCommand("SV_2", false);
   sendMeshCommand("SV_3", false);
   sendMeshCommand("SV_4", false);
-  
+
   // Disconnect from Zoho
   zClient.disconnect();
-  
   delay(1000);
 
-  WiFiClient client;
+  // ✅ Handle GitHub redirects properly
+  WiFiClientSecure client;
+  client.setInsecure();
   
-  // Perform update
-  t_httpUpdate_return ret = httpUpdate.update(client, firmwareURL);
+  // 🔧 FOLLOW REDIRECTS MANUALLY
+  String actualDownloadURL = resolveGitHubRedirect(firmwareURL);
   
-  switch(ret) {
+  if (actualDownloadURL == "") {
+#ifdef SERIAL_DEBUG
+    Serial.println("❌ Failed to resolve GitHub redirect");
+#endif
+    zClient.connect();
+    return;
+  }
+
+#ifdef SERIAL_DEBUG
+  Serial.println("🎯 Resolved download URL: " + actualDownloadURL);
+#endif
+
+  // ✅ Configure HTTPUpdate with progress tracking
+  httpUpdate.rebootOnUpdate(true);
+  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+  // ✅ Enhanced progress callbacks with speed monitoring
+  httpUpdate.onStart([]() {
+#ifdef SERIAL_DEBUG
+    Serial.println("📥 OTA Update Started");
+    Serial.println("========================================");
+#endif
+  });
+
+  httpUpdate.onEnd([]() {
+#ifdef SERIAL_DEBUG
+    Serial.println("\n✅ OTA Update Finished");
+    
+    // Final speed statistics
+    unsigned long totalTime = millis() - otaMetrics.startTime;
+    float averageSpeed = (otaMetrics.totalBytes / 1024.0) / (totalTime / 1000.0);
+    
+    Serial.println("========================================");
+    Serial.printf("📊 FINAL STATISTICS:\n");
+    Serial.printf("   Total Time: %.1f seconds\n", totalTime / 1000.0);
+    Serial.printf("   Average Speed: %.2f KB/s\n", averageSpeed);
+    Serial.printf("   Total Data: %.2f KB\n", otaMetrics.totalBytes / 1024.0);
+    Serial.println("========================================");
+#endif
+  });
+
+  httpUpdate.onProgress([](int cur, int total) {
+    // Update speed metrics
+    size_t currentBytes = cur;
+    size_t totalBytes = total;
+    
+    otaMetrics.totalBytes = currentBytes;
+    updateOTASpeedMetrics(currentBytes, totalBytes);
+    
+    // Log WiFi status every 30% progress
+    static int lastProgress = 0;
+    int currentProgress = (cur * 100) / total;
+    
+    if (currentProgress - lastProgress >= 30) {
+      logWiFiStatus();
+      lastProgress = currentProgress;
+    }
+  });
+
+  httpUpdate.onError([](int err) {
+#ifdef SERIAL_DEBUG
+    Serial.printf("\n❌ OTA Error: %d - %s\n", err, httpUpdate.getLastErrorString().c_str());
+    
+    // Error statistics
+    unsigned long totalTime = millis() - otaMetrics.startTime;
+    Serial.printf("📊 Failed after %.1f seconds\n", totalTime / 1000.0);
+    Serial.printf("   Downloaded: %.2f KB\n", otaMetrics.totalBytes / 1024.0);
+    Serial.printf("   Average Speed: %.2f KB/s\n", 
+                 (otaMetrics.totalBytes / 1024.0) / (totalTime / 1000.0));
+#endif
+  });
+
+  // ✅ Perform the actual update with resolved URL
+  t_httpUpdate_return ret = httpUpdate.update(client, actualDownloadURL);
+
+  // ✅ Handle results
+  switch (ret) {
     case HTTP_UPDATE_OK:
 #ifdef SERIAL_DEBUG
-      Serial.println("✅ Update successful - Rebooting");
+      Serial.println("✅ OTA Update successful! Rebooting...");
 #endif
-      ESP.restart();
       break;
-      
+
     case HTTP_UPDATE_FAILED:
 #ifdef SERIAL_DEBUG
-      Serial.printf("❌ Update failed: %s\n", httpUpdate.getLastErrorString().c_str());
+      Serial.printf("❌ OTA Update failed!\n");
+      Serial.printf("   Error Code: %d\n", httpUpdate.getLastError());
+      Serial.printf("   Error Message: %s\n", httpUpdate.getLastErrorString().c_str());
 #endif
-      // Reconnect to Zoho after failed update
       zClient.connect();
       break;
-      
+
     case HTTP_UPDATE_NO_UPDATES:
 #ifdef SERIAL_DEBUG
       Serial.println("ℹ️ No updates available");
 #endif
+      zClient.connect();
+      break;
+
+    default:
+#ifdef SERIAL_DEBUG
+      Serial.printf("⚠️ Unknown OTA result: %d\n", ret);
+#endif
+      zClient.connect();
       break;
   }
 }
+
+// 🔧 FIXED: Handle GitHub release assets properly
+String resolveGitHubRedirect(String url) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setReuse(false);
+  http.setTimeout(15000);
+  
+#ifdef SERIAL_DEBUG
+  Serial.printf("🔗 Resolving GitHub URL: %s\n", url.c_str());
+#endif
+
+  http.begin(client, url);
+  int httpCode = http.GET();
+  
+  // Get the final URL after all redirects
+  String finalURL = http.getLocation();
+  
+  http.end();
+
+  // If we got a complex GitHub assets URL, use the original URL with direct download
+  if (finalURL.indexOf("release-assets.githubusercontent.com") != -1) {
+#ifdef SERIAL_DEBUG
+    Serial.println("⚠️ GitHub assets URL detected - using direct download approach");
+#endif
+    return url; // Use original URL and let HTTPClient handle redirects internally
+  }
+  
+  // If no redirect or simple redirect, use the resolved URL
+  if (finalURL == "") {
+    finalURL = url;
+  }
+  
+#ifdef SERIAL_DEBUG
+  Serial.printf("🔗 Final URL: %s\n", finalURL.c_str());
+  Serial.printf("📡 HTTP Code: %d\n", httpCode);
+#endif
+
+  return finalURL;
+}
+
+void testOTAURL(String url) {
+#ifdef SERIAL_DEBUG
+  Serial.println("🔍 Testing OTA URL...");
+  Serial.println("📋 URL: " + url);
+#endif
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  
+  http.begin(client, url);
+  int httpCode = http.GET();
+  
+#ifdef SERIAL_DEBUG
+  Serial.printf("📡 HTTP Response Code: %d\n", httpCode);
+  
+  if (httpCode == HTTP_CODE_OK) {
+    Serial.println("✅ URL is accessible");
+    String contentType = http.header("Content-Type");
+    int contentLength = http.getSize();
+    Serial.printf("📄 Content-Type: %s\n", contentType.c_str());
+    Serial.printf("📦 Content-Length: %d bytes\n", contentLength);
+  } else if (httpCode == HTTP_CODE_NOT_FOUND) {
+    Serial.println("❌ Error 404 - File not found on GitHub");
+    Serial.println("💡 Check if the firmware.bin exists in the release");
+  } else if (httpCode == HTTP_CODE_FORBIDDEN) {
+    Serial.println("❌ Error 403 - Access forbidden");
+    Serial.println("💡 GitHub might be rate limiting or the repo is private");
+  } else {
+    Serial.printf("❌ HTTP Error: %d\n", httpCode);
+  }
+#endif
+  
+  http.end();
+}
+
+
 
 bool verifyFirmwareURL(String url) {
   // Basic security check - verify URL is from GitHub
@@ -784,6 +1030,9 @@ void checkGitHubForUpdates() {
     return;
   }
 
+  // First test the version file
+  testOTAURL(VERSION_FILE_URL);
+
   HTTPClient http;
   http.begin(VERSION_FILE_URL);
   
@@ -803,6 +1052,9 @@ void checkGitHubForUpdates() {
 #endif
       
       String downloadURL = "https://github.com/" + String(GITHUB_REPO) + "/releases/download/" + latestVersion + "/firmware.bin";
+      
+      // Test the firmware URL first
+      testOTAURL(downloadURL);
       
       if (verifyFirmwareURL(downloadURL)) {
         performRemoteOTA(downloadURL);
